@@ -46,6 +46,9 @@ services:
     mem_limit: "{{ crs.resource.memory }}"
 {%- endif %}
     volumes:
+{%- if extra_ca_dir %}
+      - {{ extra_ca_dir }}:{{ extra_ca_dir_container }}:ro
+{%- endif %}
 {%- if not source_only %}
       - {{ work_dir.get_build_output_dir(crs.name, target, build_id, sanitizer) }}:/OSS_CRS_BUILD_OUT_DIR:ro
       - {{ rebuild_out_dir }}:/OSS_CRS_REBUILD_OUT_DIR:ro
@@ -87,10 +90,15 @@ services:
     image: {{ litellm_image }}
     attach: false
     restart: on-failure:3
-{%- if offline %}
+{%- if offline or extra_ca_dir %}
     environment:
+{%- if offline %}
       # offline the model cost map cannot be fetched; skip the attempt
       - LITELLM_LOCAL_MODEL_COST_MAP=True
+{%- endif %}
+{%- for ca_key, ca_value in extra_ca_env.items() %}
+      - {{ ca_key }}={{ ca_value }}
+{%- endfor %}
 {%- endif %}
     depends_on:
       oss-crs-postgres:
@@ -104,6 +112,9 @@ services:
 {%- endfor %}
     volumes:
       - {{ llm_context.litellm_config_path }}:/app/config.yaml:ro
+{%- if extra_ca_dir %}
+      - {{ extra_ca_dir }}:{{ extra_ca_dir_container }}:ro
+{%- endif %}
     networks:
       {{ crs_compose_name }}-infra-only-network:
       {{ crs_compose_name }}-network:
@@ -150,7 +161,7 @@ services:
         condition: service_healthy
     environment:
       - LITELLM_API_URL={{ litellm_internal_url }}
-      - LITELLM_SPEND_REPORT_PATH=/litellm-spend-report.json
+      - LITELLM_SPEND_REPORT_PATH=/spend/litellm-spend-report.json
       - LITELLM_SPEND_POLL_INTERVAL_SEC=5
     secrets:
       - litellm_master_key
@@ -164,7 +175,7 @@ services:
       {{ crs_compose_name }}-network:
     volumes:
       - {{ llm_context.key_gen_request_path }}:/key_gen_request.yaml:ro
-      - {{ litellm_spend_report_path }}:/litellm-spend-report.json:rw
+      - {{ litellm_spend_report_dir }}:/spend:rw
   ###########################################
 {% endif %}
   ###########################################
@@ -270,7 +281,7 @@ services:
       - {{ webui_log_dir }}:/webui_logs:rw
       - {{ work_dir.get_build_output_dir("oss-crs-coverage", target, build_id, sanitizer) }}:/coverage_build:ro
 {%- if llm_context is defined and llm_context.mode == "internal" %}
-      - {{ litellm_spend_report_path }}:/litellm-spend-report.json:ro
+      - {{ litellm_spend_report_dir }}:/spend:ro
 {%- endif %}
     networks:
       {{ crs_compose_name }}-infra-only-network:

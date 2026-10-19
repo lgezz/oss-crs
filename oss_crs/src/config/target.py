@@ -5,7 +5,7 @@ from typing import Optional
 
 import yaml
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # See https://google.github.io/oss-fuzz/getting-started/new-project-guide/#language
@@ -18,6 +18,7 @@ class TargetLanguage(Enum):
     JVM = "jvm"  # Java, Kotlin, Scala and other JVM-based languages
     SWIFT = "swift"
     JAVASCRIPT = "javascript"
+    RUBY = "ruby"
     LUA = "lua"
 
 
@@ -26,12 +27,18 @@ class TargetSanitizer(Enum):
     ASAN = "address"
     MSAN = "memory"
     UBSAN = "undefined"
+    THREAD = "thread"
+    COVERAGE = "coverage"
+    INTROSPECTOR = "introspector"
+    HWADDRESS = "hwaddress"
+    NONE = "none"
 
 
 # See https://google.github.io/oss-fuzz/getting-started/new-project-guide/#architectures
 class TargetArch(Enum):
     X86_64 = "x86_64"
     I386 = "i386"
+    AARCH64 = "aarch64"
 
 
 # See https://google.github.io/oss-fuzz/getting-started/new-project-guide/#fuzzing_engines-optional
@@ -40,6 +47,8 @@ class FuzzingEngine(Enum):
     AFL = "afl"
     HONGGFUZZ = "honggfuzz"
     CENTIPEDE = "centipede"
+    NONE = "none"
+    WYCHEPROOF = "wycheproof"
 
 
 class TargetConfig(BaseModel):
@@ -89,6 +98,24 @@ class TargetConfig(BaseModel):
         ],
         description="list of fuzzing engines to use. Defaults to all supported engines.",
     )
+
+    @field_validator("sanitizers", mode="before")
+    @classmethod
+    def normalize_experimental_sanitizers(cls, value):
+        """Flatten OSS-Fuzz's ``sanitizer: {experimental: true}`` entries."""
+        if not isinstance(value, list):
+            return value
+        normalized = []
+        for sanitizer in value:
+            if isinstance(sanitizer, dict):
+                if len(sanitizer) != 1:
+                    raise ValueError(
+                        "experimental sanitizer entries must contain one sanitizer"
+                    )
+                normalized.extend(sanitizer)
+            else:
+                normalized.append(sanitizer)
+        return normalized
 
     @classmethod
     def from_yaml(cls, yaml_content: str) -> "TargetConfig":

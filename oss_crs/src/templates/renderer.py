@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Optional
 import os
 import yaml
 
+from ..ca_certs import CA_DIR_CONTAINER, ca_env, write_ca_dir
 from ..config.crs import CRSType, OSS_CRS_INFRA_PREFIX
 from ..constants import (
     EXCHANGE_DIR_NAMES,
@@ -367,6 +368,8 @@ def render_run_crs_compose_docker_compose(
         tmp_dir = tmp_docker_compose.dir if tmp_docker_compose.dir else Path("/tmp")
         litellm_spend_report_path = str(tmp_dir / "litellm-spend-report.json")
 
+    litellm_spend_report_dir = str(Path(litellm_spend_report_path).parent)
+
     context = {
         "libCRS_path": str(LIBCRS_PATH),
         "crs_compose_name": crs_compose_name,
@@ -413,7 +416,7 @@ def render_run_crs_compose_docker_compose(
         "litellm_image": OSS_CRS_LITELLM_TAG,
         "litellm_internal_url": LITELLM_INTERNAL_URL,
         "offline": crs_compose.offline,
-        "litellm_spend_report_path": litellm_spend_report_path,
+        "litellm_spend_report_dir": litellm_spend_report_dir,
         "postgres_image": OSS_CRS_POSTGRES_TAG,
         "postgres_user": POSTGRES_USER,
         "postgres_port": POSTGRES_PORT,
@@ -441,6 +444,19 @@ def render_run_crs_compose_docker_compose(
     llm_context = prepare_llm_context(tmp_docker_compose, crs_compose)
     if llm_context:
         context["llm_context"] = llm_context
+
+    # Not folded into prepare_llm_context: that returns None when the compose has
+    # no llm_config, which is exactly the case where a CRS talks to a provider
+    # directly and needs the CA most.
+    extra_ca_dir = None
+    if crs_compose.extra_ca_certs:
+        tmp_dir = tmp_docker_compose.dir
+        if tmp_dir is None:
+            raise RuntimeError("Temporary docker compose directory was not initialized")
+        extra_ca_dir = write_ca_dir(tmp_dir, crs_compose.extra_ca_certs)
+    context["extra_ca_dir"] = extra_ca_dir
+    context["extra_ca_dir_container"] = CA_DIR_CONTAINER
+    context["extra_ca_env"] = ca_env() if extra_ca_dir else {}
 
     module_envs: dict[str, dict[str, str]] = {}
     warnings: list[str] = []
@@ -475,6 +491,7 @@ def render_run_crs_compose_docker_compose(
                 include_fetch_dir=bool(fetch_dir),
                 llm_api_url=llm_url,
                 llm_api_key=llm_key,
+                extra_ca_mounted=extra_ca_dir is not None,
                 scope=f"{crs.name}:run:{module_name}",
             )
             module_envs[service_name] = env_plan.effective_env

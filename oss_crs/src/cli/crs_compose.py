@@ -18,6 +18,7 @@ from .clean import add_clean_command, handle_clean
 from .setup import add_setup_command, handle_setup
 from .export import handle_export
 from .import_cmd import handle_import
+from .list_harnesses import add_list_harnesses_command, handle_list_harnesses
 
 
 DEFAULT_WORK_DIR = (Path(__file__) / "../../../../.oss-crs-workdir").resolve()
@@ -45,6 +46,17 @@ def add_common_arguments(parser):
         required=False,
         help="Disables network access for CRS Compose operations",
         action="store_true",
+    )
+    parser.add_argument(
+        "--extra-ca-certs",
+        type=Path,
+        required=False,
+        default=None,
+        help=(
+            "Path to a PEM bundle of additional trusted CAs, for LLM endpoints "
+            "whose certificate chains to an internal CA. Overrides "
+            "extra_ca_certs in the compose file and $OSS_CRS_EXTRA_CA_CERTS"
+        ),
     )
 
 
@@ -876,6 +888,7 @@ def cli() -> bool | int:
     add_clean_command(subparsers, add_common_arguments, add_target_arguments)
     add_setup_command(subparsers)
     add_web_ui_command(subparsers)
+    add_list_harnesses_command(subparsers, DEFAULT_WORK_DIR)
 
     argv = sys.argv[1:]
     _warn_deprecated_cli_aliases(argv)
@@ -897,6 +910,9 @@ def cli() -> bool | int:
     for key, value in vars(args).items():
         if isinstance(value, Path):
             setattr(args, key, value.expanduser().resolve())
+
+    if args.command == "list-harnesses":
+        return handle_list_harnesses(args)
 
     # Handle gen-compose early - it doesn't need CRSCompose initialization
     if args.command == "gen-compose":
@@ -925,6 +941,7 @@ def cli() -> bool | int:
         args.work_dir,
         skip_crs_init=skip_crs_init,
         offline=args.offline,
+        extra_ca_certs=args.extra_ca_certs,
     )
 
     if args.command == "prepare":

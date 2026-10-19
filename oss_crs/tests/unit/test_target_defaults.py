@@ -1,8 +1,13 @@
 # SPDX-License-Identifier: MIT
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
-from oss_crs.src.target import Target
+from oss_crs.src.target import Target, extract_name_from_proj_path
+
+
+def test_extract_name_from_project_path_is_platform_neutral() -> None:
+    assert extract_name_from_proj_path(str(Path("projects") / "libxml2")) == "libxml2"
 
 
 def test_target_env_uses_fixed_defaults_without_project_yaml(tmp_path: Path) -> None:
@@ -62,6 +67,28 @@ def test_target_env_prefers_address_sanitizer_when_listed(tmp_path: Path) -> Non
     assert env["sanitizer"] == "address"
 
 
+def test_target_accepts_experimental_sanitizer_metadata(tmp_path: Path) -> None:
+    proj = tmp_path / "proj"
+    proj.mkdir(parents=True, exist_ok=True)
+    (proj / "project.yaml").write_text(
+        "\n".join(
+            [
+                "language: c++",
+                "sanitizers:",
+                "  - address",
+                "  - memory:",
+                "      experimental: true",
+            ]
+        )
+        + "\n"
+    )
+
+    target = Target(tmp_path / "work", proj, None)
+
+    assert target.language == "c++"
+    assert target.sanitizer == "address"
+
+
 def test_target_env_prefers_libfuzzer_engine_when_listed(tmp_path: Path) -> None:
     """When 'libfuzzer' is in the fuzzing_engines list, prefer it over first entry."""
     proj = tmp_path / "proj"
@@ -79,6 +106,42 @@ def test_target_env_prefers_libfuzzer_engine_when_listed(tmp_path: Path) -> None
     env = target.get_target_env()
     # "libfuzzer" is preferred even though "afl" is first
     assert env["engine"] == "libfuzzer"
+
+
+def test_javascript_target_accepts_none_sanitizer(tmp_path: Path) -> None:
+    proj = tmp_path / "proj"
+    proj.mkdir(parents=True, exist_ok=True)
+    (proj / "project.yaml").write_text(
+        "language: javascript\nsanitizers: [none]\nfuzzing_engines: [libfuzzer]\n"
+    )
+
+    target = Target(tmp_path / "work", proj, None)
+
+    assert target.language == "javascript"
+    assert target.sanitizer == "none"
+
+
+def test_target_accepts_current_oss_fuzz_enum_values(tmp_path: Path) -> None:
+    proj = tmp_path / "proj"
+    proj.mkdir(parents=True, exist_ok=True)
+    (proj / "project.yaml").write_text(
+        "\n".join(
+            [
+                "language: ruby",
+                "sanitizers: [thread, address, hwaddress]",
+                "architectures: [x86_64, aarch64]",
+                "fuzzing_engines: [wycheproof, libfuzzer, none]",
+            ]
+        )
+        + "\n"
+    )
+
+    target = Target(tmp_path / "work", proj, None)
+
+    assert target.language == "ruby"
+    assert target.sanitizer == "address"
+    assert target.architecture == "x86_64"
+    assert target.engine == "libfuzzer"
 
 
 def test_target_env_falls_back_when_project_yaml_invalid(tmp_path: Path) -> None:
@@ -160,3 +223,52 @@ def test_build_docker_image_does_not_depend_on_harness(
 
     assert target.build_docker_image() == target.get_docker_image_name()
     built.assert_called_once()
+
+
+def test_project_hash_covers_nested_and_pycache_files(tmp_path: Path) -> None:
+    proj = tmp_path / "proj"
+    generated = proj / "__pycache__" / "generated.pyc"
+    generated.parent.mkdir(parents=True)
+    (proj / "Dockerfile").write_text("FROM scratch\n")
+    generated.write_bytes(b"first")
+
+    first_hash = Target(tmp_path / "work", proj, None).get_repo_hash()
+    generated.write_bytes(b"second")
+    second_hash = Target(tmp_path / "work", proj, None).get_repo_hash()
+
+    assert first_hash != second_hash
+
+
+def test_target_exposes_containing_project_repository_head(
+    tmp_path: Path, monkeypatch
+) -> None:
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    repository = Mock()
+    repository.head.commit.hexsha = "project-head"
+    repo_constructor = Mock(return_value=repository)
+    monkeypatch.setattr("oss_crs.src.target.git.Repo", repo_constructor)
+    target = Target(tmp_path / "work", proj, None)
+
+    assert target.get_project_repository_head() == "project-head"
+    repo_constructor.assert_called_once_with(proj, search_parent_directories=True)
+
+
+def test_target_resolves_main_repository_head(tmp_path: Path, monkeypatch) -> None:
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "project.yaml").write_text(
+        "language: c\nmain_repo: https://example.com/source.git\n"
+    )
+    run = Mock(return_value=SimpleNamespace(returncode=0, stdout="source-head\tHEAD\n"))
+    monkeypatch.setattr("oss_crs.src.target.subprocess.run", run)
+    target = Target(tmp_path / "work", proj, None)
+
+    assert target.get_source_repository_head() == "source-head"
+    assert run.call_args.args[0] == [
+        "git",
+        "ls-remote",
+        "--",
+        "https://example.com/source.git",
+        "HEAD",
+    ]
